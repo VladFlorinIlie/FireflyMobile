@@ -23,6 +23,8 @@ import androidx.paging.*
 import com.squareup.moshi.Moshi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import retrofit2.Response
 import xyz.hisname.fireflyiii.Constants
 import xyz.hisname.fireflyiii.data.local.dao.AttachmentDataDao
@@ -47,6 +49,8 @@ import kotlin.random.Random
 @Suppress("RedundantSuspendModifier")
 class TransactionRepository(private val transactionDao: TransactionDataDao,
                             private val transactionService: TransactionService) {
+
+    private val mutex = Mutex()
 
     suspend fun insertTransaction(transaction: Transactions){
         transactionDao.insert(transaction)
@@ -581,36 +585,47 @@ class TransactionRepository(private val transactionDao: TransactionDataDao,
     }
 
     private suspend fun loadRemoteData(startDate: String?, endDate: String?, sourceName: String){
-        try {
-            val transactionData: MutableList<TransactionData> = arrayListOf()
-            val networkCall = transactionService.getPaginatedTransactions(startDate, endDate,
-                    convertString(sourceName), 1)
-            networkCall.body()?.data?.forEach { transaction ->
-                transactionData.add(transaction)
-            }
-            val responseBody = networkCall.body()
-            if (responseBody != null && networkCall.isSuccessful) {
-                val pagination = responseBody.meta.pagination
-                if (pagination.total_pages != pagination.current_page) {
-                    for (items in 2..pagination.total_pages) {
-                        val service = transactionService.getPaginatedTransactions(startDate, endDate,
-                                convertString(sourceName), items).body()
-                        service?.data?.forEach { dataToBeAdded ->
-                            transactionData.add(dataToBeAdded)
+        mutex.withLock {
+            try {
+                val transactionData: MutableList<TransactionData> = arrayListOf()
+                val networkCall = transactionService.getPaginatedTransactions(
+                    startDate, endDate,
+                    convertString(sourceName), 1
+                )
+                networkCall.body()?.data?.forEach { transaction ->
+                    transactionData.add(transaction)
+                }
+                val responseBody = networkCall.body()
+                if (responseBody != null && networkCall.isSuccessful) {
+                    val pagination = responseBody.meta.pagination
+                    if (pagination.total_pages != pagination.current_page) {
+                        for (items in 2..pagination.total_pages) {
+                            val service = transactionService.getPaginatedTransactions(
+                                startDate, endDate,
+                                convertString(sourceName), items
+                            ).body()
+                            service?.data?.forEach { dataToBeAdded ->
+                                transactionData.add(dataToBeAdded)
+                            }
+                        }
+                    }
+                    deleteTransactionsByDate(startDate, endDate, sourceName)
+                    transactionData.forEach { data ->
+                        data.transactionAttributes.transactions.forEach { transaction ->
+                            transactionDao.insert(transaction)
+                            transactionDao.insert(
+                                TransactionIndex(
+                                    0, data.transactionId,
+                                    transaction.transaction_journal_id,
+                                    data.transactionAttributes.group_title
+                                )
+                            )
                         }
                     }
                 }
-                deleteTransactionsByDate(startDate, endDate, sourceName)
-                transactionData.forEach { data ->
-                    data.transactionAttributes.transactions.forEach { transaction ->
-                        transactionDao.insert(transaction)
-                        transactionDao.insert(TransactionIndex(0, data.transactionId,
-                                transaction.transaction_journal_id,
-                                data.transactionAttributes.group_title))
-                    }
-                }
+            } catch (exception: Exception) {
             }
-        } catch (exception: Exception){ }
+        }
     }
 
     private suspend fun deleteTransactionsByDate(startDate: String?, endDate: String?, transactionType: String): Int{

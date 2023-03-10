@@ -99,7 +99,7 @@ class BudgetSummaryViewModel(application: Application): BaseViewModel(applicatio
     }
 
     private suspend fun getTransaction(){
-        transactionRepository.getTransactionByDateAndCurrencyCode(startOfMonth, endOfMonth,
+        val totalExpense = transactionRepository.getTransactionByDateAndCurrencyCode(startOfMonth, endOfMonth,
                 defaultCurrency, "withdrawal", true)
         val uniqBudget = transactionRepository.getUniqueBudgetByDate(
                 DateTimeUtil.getStartOfMonth(),
@@ -126,27 +126,38 @@ class BudgetSummaryViewModel(application: Application): BaseViewModel(applicatio
             }
         }
 
-        val expensesWithoutBudget = budget.minus(sumOfWithdrawal)
-        val percentage = if(expensesWithoutBudget != BigDecimal.ZERO && budget != BigDecimal.ZERO){
-            expensesWithoutBudget
+        val expensesWithoutBudget = totalExpense.minus(sumOfWithdrawal)
+        if(expensesWithoutBudget.signum() != 0 && budget != BigDecimal.ZERO){
+            val percentage = expensesWithoutBudget
                     .divide(budget,2, RoundingMode.HALF_UP)
                     .times(100.toBigDecimal())
                     .toFloat()
-        } else {
-            0f
-        }
-        returnData.add(Triple(percentage,
+            returnData.add(Triple(percentage,
                 getApplication<Application>().getString(R.string.expenses_without_budget),
                 expensesWithoutBudget))
+        }
+
+        val leftToSpend = budget.minus(totalExpense)
+        if(leftToSpend.signum() != 0 && budget != BigDecimal.ZERO){
+            val percentageLeft = leftToSpend
+                .divide(budget,2, RoundingMode.HALF_UP)
+                .times(100.toBigDecimal())
+                .toFloat()
+            returnData.add(Triple(percentageLeft,
+                // TODO: add localization
+                "Available sum",
+                expensesWithoutBudget))
+        }
+
         pieChartData.postValue(returnData)
         originalBudget = budget
-        val remainder = budget.minus(sumOfWithdrawal)
+        val remainder = budget.minus(totalExpense)
 
         originalRemainderString = "$currencySymbol $remainder"
         originalBudgetString = "$currencySymbol $budget"
-        originalSpentString = "$currencySymbol $sumOfWithdrawal"
+        originalSpentString = "$currencySymbol $totalExpense"
 
-        totalTransaction.postValue("$currencySymbol $sumOfWithdrawal")
+        totalTransaction.postValue("$currencySymbol $totalExpense")
         availableBudget.postValue("$currencySymbol $budget")
         balanceBudget.postValue("$currencySymbol $remainder")
 
@@ -157,7 +168,8 @@ class BudgetSummaryViewModel(application: Application): BaseViewModel(applicatio
                 start, end, currency, "withdrawal", budgetName)
 
     fun getTransactionList(budget: String?): LiveData<PagingData<SplitSeparator>>{
-        if(budget == null){
+        // TODO: add localization
+        if(budget == null || budget == "Available sum"){
             return Pager(PagingConfig(pageSize = Constants.PAGE_SIZE)){
                 TransactionPagingSource(currencyService, transactionDataDao, defaultCurrency,
                         startOfMonth, endOfMonth, "withdrawal")
